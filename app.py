@@ -1,5 +1,8 @@
 from flask import Flask, request, jsonify
 from flask_mysqldb import MySQL 
+import MySQLdb.cursors
+from decimal import Decimal
+from datetime import date, time, datetime
 
 app = Flask(__name__)
 
@@ -37,7 +40,7 @@ def get_customers():
 @app.route('/schedules', methods=['GET'])
 def get_schedules():
     cur = mysql.connection.cursor()
-    # JOIN para makuha ang schedule at customer info
+
     cur.execute("""
         SELECT s.ScheduleID, s.ServiceType, s.AppointmentDate, s.AppointmentTime,
                s.Duration, s.Status,
@@ -47,7 +50,56 @@ def get_schedules():
     """)
     rows = cur.fetchall()
     cur.close()
-    return jsonify(rows)
+
+    # Convert tuples to dict
+    result = []
+    for r in rows:
+        result.append({
+            "ScheduleID": r[0],
+            "ServiceType": r[1],
+            "AppointmentDate": str(r[2]),
+            "AppointmentTime": str(r[3]),
+            "Duration": r[4],
+            "Status": r[5],
+            "CustomerID": r[6],
+            "CustomerName": r[7],
+            "Phone": r[8],
+            "Email": r[9]
+        })
+    return jsonify(result)
+
+def serialize_row(row: dict):
+    safe = {}
+    for k, v in row.items():
+        if isinstance(v, Decimal):
+            safe[k] = float(v)              # convert Decimal to float
+        elif isinstance(v, (date, time, datetime)):
+            safe[k] = v.isoformat()         # convert date/time to string
+        else:
+            safe[k] = v
+    return safe
+
+@app.route('/payments', methods=['GET'])
+def get_payments():
+    cur = mysql.connection.cursor(MySQLdb.cursors.DictCursor)
+    cur.execute("""
+        SELECT p.PaymentID, p.Amount, p.PaymentDate, p.Method, p.Status,
+               s.ScheduleID, s.ServiceType, s.AppointmentDate, s.AppointmentTime,
+               c.CustomerID, c.CustomerName, c.Phone, c.Email
+        FROM Payments p
+        JOIN Schedules s ON p.ScheduleID = s.ScheduleID
+        JOIN Customers c ON s.CustomerID = c.CustomerID
+    """)
+    rows = cur.fetchall()
+    cur.close()
+
+    # convert each row to JSON-safe dict
+    result = [serialize_row(r) for r in rows]
+    return jsonify(result)
+
+    # serialize each row to JSON-safe types
+    safe = [serialize_row(r) for r in rows]
+    return jsonify(safe)
 
 
 # --- Run app (isa lang dapat) ---
