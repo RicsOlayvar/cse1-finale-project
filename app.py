@@ -12,18 +12,21 @@ app.config['MYSQL_PASSWORD'] = 'root'
 app.config['MYSQL_DB'] = 'salon_services'
 
 # --- JWT config ---
-app.config["JWT_SECRET_KEY"] = "super-secret-key"  # TIP: ilagay sa .env file sa production
+app.config["JWT_SECRET_KEY"] = "super-secret-key"  
 jwt = JWTManager(app)
 
 mysql = MySQL(app)
 
-# --- Helper function for output formatting ---
-def format_output(data, fmt):
+#output formatting ---
+def format_output(data, fmt, wrapper_name="item"):
     if fmt == "xml":
-        xml_str = xmltodict.unparse({"response": {"item": data}}, pretty=True, indent="  ")
+        # Wrap data in a named container (e.g., customers, schedules)
+        xml_data = { "response": { wrapper_name: data } }
+        xml_str = xmltodict.unparse(xml_data, pretty=True, indent="  ")
         return make_response(xml_str, 200, {"Content-Type": "application/xml"})
     # default JSON
     return make_response(jsonify(data), 200)
+
 
 # --- Home route ---
 @app.route('/')
@@ -33,13 +36,35 @@ def home():
 # --- JWT Login ---
 @app.route("/login", methods=["POST"])
 def login():
-    username = request.json.get("username")
-    password = request.json.get("password")
+    # Try JSON first
+    if request.is_json:
+        username = request.json.get("username")
+        password = request.json.get("password")
+    else:
+        # Fallback to form data (HTML form submission)
+        username = request.form.get("username")
+        password = request.form.get("password")
+
     if username == "admin" and password == "1234":
         access_token = create_access_token(identity=username)
         refresh_token = create_refresh_token(identity=username)
         return jsonify(access_token=access_token, refresh_token=refresh_token), 200
     return jsonify(msg="Bad credentials"), 401
+
+# --- JWT Login Page (GET) ---
+@app.route("/login", methods=["GET"])
+def login_page():
+    return """
+    <h2>Salon API Login</h2>
+    <form method="post" action="/login">
+        <label>Username:</label><br>
+        <input type="text" name="username"><br>
+        <label>Password:</label><br>
+        <input type="password" name="password"><br><br>
+        <input type="submit" value="Login">
+    </form>
+    """
+
 
 # --- Refresh Token ---
 @app.route("/refresh", methods=["POST"])
@@ -48,8 +73,6 @@ def refresh():
     identity = get_jwt_identity()
     new_access_token = create_access_token(identity=identity)
     return jsonify(access_token=new_access_token), 200
-
-
 
 # --- Customers CRUD ---
 @app.route('/customers', methods=['POST'])
@@ -66,7 +89,7 @@ def add_customer():
         cur.close()
         return jsonify({"message": "Customer added"}), 201
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 400
 
 @app.route('/customers', methods=['GET'])
 @jwt_required()
@@ -217,6 +240,10 @@ def get_payments():
             "Email": r[12]
         })
     return format_output(result, request.args.get("format"))
+
+
+
+
 
 # --- Run app ---
 if __name__ == '__main__':
