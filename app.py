@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify, make_response
 from flask_mysqldb import MySQL
-import MySQLdb.cursors
 import xmltodict
+from flask_jwt_extended import JWTManager, create_access_token, create_refresh_token,jwt_required, get_jwt_identity
 
 app = Flask(__name__)
 
@@ -11,21 +11,49 @@ app.config['MYSQL_USER'] = 'root'
 app.config['MYSQL_PASSWORD'] = 'root'
 app.config['MYSQL_DB'] = 'salon_services'
 
+# --- JWT config ---
+app.config["JWT_SECRET_KEY"] = "super-secret-key"  # TIP: ilagay sa .env file sa production
+jwt = JWTManager(app)
+
 mysql = MySQL(app)
 
 # --- Helper function for output formatting ---
 def format_output(data, fmt):
     if fmt == "xml":
-        return make_response(xmltodict.unparse({"response": data}), 200)
-    return jsonify(data)
+        xml_str = xmltodict.unparse({"response": {"item": data}}, pretty=True, indent="  ")
+        return make_response(xml_str, 200, {"Content-Type": "application/xml"})
+    # default JSON
+    return make_response(jsonify(data), 200)
 
 # --- Home route ---
 @app.route('/')
 def home():
     return "Salon API is running!"
 
+# --- JWT Login ---
+@app.route("/login", methods=["POST"])
+def login():
+    username = request.json.get("username")
+    password = request.json.get("password")
+    if username == "admin" and password == "1234":
+        access_token = create_access_token(identity=username)
+        refresh_token = create_refresh_token(identity=username)
+        return jsonify(access_token=access_token, refresh_token=refresh_token), 200
+    return jsonify(msg="Bad credentials"), 401
+
+# --- Refresh Token ---
+@app.route("/refresh", methods=["POST"])
+@jwt_required(refresh=True)
+def refresh():
+    identity = get_jwt_identity()
+    new_access_token = create_access_token(identity=identity)
+    return jsonify(access_token=new_access_token), 200
+
+
+
 # --- Customers CRUD ---
 @app.route('/customers', methods=['POST'])
+@jwt_required()
 def add_customer():
     data = request.json
     if not data or not data.get('CustomerID') or not data.get('CustomerName') or not data.get('Phone'):
@@ -41,6 +69,7 @@ def add_customer():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/customers', methods=['GET'])
+@jwt_required()
 def get_customers():
     cur = mysql.connection.cursor()
     cur.execute("SELECT * FROM Customers")
@@ -57,6 +86,7 @@ def get_customers():
     return format_output(result, request.args.get("format"))
 
 @app.route('/customers/<int:id>', methods=['PUT'])
+@jwt_required()
 def update_customer(id):
     data = request.json
     if not data:
@@ -71,6 +101,7 @@ def update_customer(id):
     return jsonify({"message": "Customer updated"})
 
 @app.route('/customers/<int:id>', methods=['DELETE'])
+@jwt_required()
 def delete_customer(id):
     cur = mysql.connection.cursor()
     cur.execute("DELETE FROM Customers WHERE CustomerID=%s", (id,))
@@ -80,8 +111,21 @@ def delete_customer(id):
     cur.close()
     return jsonify({"message": "Customer deleted"})
 
-# --- Schedules CRUD ---
+# --- Search Customers ---
+@app.route('/customers/search', methods=['GET'])
+@jwt_required()
+def search_customers():
+    keyword = request.args.get("q")
+    cur = mysql.connection.cursor()
+    cur.execute("SELECT * FROM Customers WHERE CustomerName LIKE %s", (f"%{keyword}%",))
+    rows = cur.fetchall()
+    cur.close()
+    result = [{"CustomerID": r[0], "CustomerName": r[1], "Phone": r[2], "Email": r[3]} for r in rows]
+    return format_output(result, request.args.get("format"))
+
+# --- Schedules CRUD (protected with JWT) ---
 @app.route('/schedules', methods=['POST'])
+@jwt_required()
 def add_schedule():
     data = request.json
     if not data or not data.get('ScheduleID') or not data.get('CustomerID') or not data.get('ServiceType'):
@@ -97,6 +141,7 @@ def add_schedule():
     return jsonify({"message": "Schedule added"}), 201
 
 @app.route('/schedules', methods=['GET'])
+@jwt_required()
 def get_schedules():
     cur = mysql.connection.cursor()
     cur.execute("""
@@ -124,35 +169,9 @@ def get_schedules():
         })
     return format_output(result, request.args.get("format"))
 
-@app.route('/schedules/<int:id>', methods=['PUT'])
-def update_schedule(id):
-    data = request.json
-    if not data:
-        return jsonify({"error": "No data provided"}), 400
-    cur = mysql.connection.cursor()
-    cur.execute("""UPDATE Schedules 
-                   SET CustomerID=%s, ServiceType=%s, AppointmentDate=%s, AppointmentTime=%s, Duration=%s, Status=%s 
-                   WHERE ScheduleID=%s""",
-                (data.get('CustomerID'), data.get('ServiceType'), data.get('AppointmentDate'),
-                 data.get('AppointmentTime'), data.get('Duration'), data.get('Status'), id))
-    mysql.connection.commit()
-    if cur.rowcount == 0:
-        return jsonify({"error": "Schedule not found"}), 404
-    cur.close()
-    return jsonify({"message": "Schedule updated"})
-
-@app.route('/schedules/<int:id>', methods=['DELETE'])
-def delete_schedule(id):
-    cur = mysql.connection.cursor()
-    cur.execute("DELETE FROM Schedules WHERE ScheduleID=%s", (id,))
-    mysql.connection.commit()
-    if cur.rowcount == 0:
-        return jsonify({"error": "Schedule not found"}), 404
-    cur.close()
-    return jsonify({"message": "Schedule deleted"})
-
-# --- Payments CRUD ---
+# --- Payments CRUD (protected with JWT) ---
 @app.route('/payments', methods=['POST'])
+@jwt_required()
 def add_payment():
     data = request.json
     if not data or not data.get('PaymentID') or not data.get('ScheduleID') or not data.get('Amount'):
@@ -167,6 +186,7 @@ def add_payment():
     return jsonify({"message": "Payment added"}), 201
 
 @app.route('/payments', methods=['GET'])
+@jwt_required()
 def get_payments():
     cur = mysql.connection.cursor()
     cur.execute("""
@@ -198,35 +218,6 @@ def get_payments():
         })
     return format_output(result, request.args.get("format"))
 
-@app.route('/payments/<int:id>', methods=['PUT'])
-def update_payment(id):
-    data = request.json
-    if not data:
-        return jsonify({"error": "No data provided"}), 400
-    cur = mysql.connection.cursor()
-    cur.execute("""UPDATE Payments 
-                   SET ScheduleID=%s, Amount=%s, PaymentDate=%s, Method=%s, Status=%s 
-                   WHERE PaymentID=%s""",
-                (data.get('ScheduleID'), data.get('Amount'), data.get('PaymentDate'),
-                 data.get('Method'), data.get('Status'), id))
-    mysql.connection.commit()
-    if cur.rowcount == 0:
-        return jsonify({"error": "Payment not found"}), 404
-    cur.close()
-    return jsonify({"message": "Payment updated"})
-
-@app.route('/payments/<int:id>', methods=['DELETE'])
-def delete_payment(id):
-    cur = mysql.connection.cursor()
-    cur.execute("DELETE FROM Payments WHERE PaymentID=%s", (id,))
-    mysql.connection.commit()
-    if cur.rowcount == 0:
-        return jsonify({"error": "Payment not found"}), 404         
-    cur.close()
-    return jsonify({"message": "Payment deleted"})          
-
-
-
-# --- Run app (isa lang dapat) ---
+# --- Run app ---
 if __name__ == '__main__':
     app.run(port=5000, debug=True)
